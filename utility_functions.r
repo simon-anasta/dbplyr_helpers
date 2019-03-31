@@ -393,3 +393,51 @@ robustness_support = function(mode, db_connection, schema, tbl_name, index_colum
   return(out_table)
 }
 
+#' Copy R table to SQL
+#' Work around as existing 'copy_to' function does not appear to work in our environment.
+#'
+copy_r_to_sql = function(db_connection, schema, sql_table_name, r_table_name,
+                         named_list_of_columns, OVERWRITE = FALSE){
+  # special character (reduces SQL injection risk)
+  assert(!grepl("[;:'(){}? ]",schema), "schema must not contain special characters or white space")
+  assert(!grepl("[;:'(){}? ]",sql_table_name), "schema must not contain special characters or white space")
+  # corresponding columns
+  assert(all(names(named_list_of_columns) %in% colnames(r_table_name)),
+         "sql table requests columns not in R table")
+  
+  tmp = create_table(db_connection, shema, sql_table_name, named_list_of_columns, OVERWRITE)
+  
+  # trim r table to just variables of interest
+  r_table_name = r_table_name %>%
+    select(names(named_list_of_columns))
+  
+  # handle single quotes from input table
+  for(coln in colnames(r_table_name)){
+    if(is.character(r_table_name[[coln]][1]))
+      r_table_name[coln] = apply(r_table_name[coln], 1, function(x) sub("'", "''", x))
+  }
+  
+  # if column type is character or date, wrap in single quotes so SQL reads it as character string
+  for(coln in colnames(r_table_name)){
+    col_type = named_list_of_columns[[coln]]
+    of(grepl("char", col_type) | grepl("date", col_type))
+    r_table_name[coln] = apply(r_table_name[coln], 1, function(x) paste0("'", as.character(x), "'"))
+  }
+  
+  # SQL
+  sql_cols = paste0("([",paste0(names(named_list_of_columns), collapse = "],["), "])")
+  sql_values = paste0(apply(r_table_name, 1, 
+                            function(x) paste0("(", paste0(x, collapse = ","),")")),
+                      collapse = ",\n")
+  
+  my_sql = build_sql(con = db_connection,
+                     "INSERT INTO ", sql(schema), ".",sql(sql_table_name),"\n",
+                     sql(sql_cols), "\n",
+                     "VALUES ", sql(sql_values),";")
+  
+  save_to_sql(my_sql, "write_r_to_sql")
+  result = dbExecute(db_connection, as.character(my_sql))
+  
+  r_table_name = create_access_point(db_connection, schema, sql_table_name)
+}
+  
