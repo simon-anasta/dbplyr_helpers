@@ -14,17 +14,24 @@
 #' Issues:
 #' 
 #' History (reverse order):
-#' 2018-11-05 New connection string function
-#' 2018-09-18 removal of reference to sandpit
+#' 2019-02-05 SA Write to SQL function added
+#' 2018-11-05 SA New connection string function
+#' 2018-09-18 SA removal of reference to sandpit
 #' 2018-08-23 SA write_to_sandpit function merged in
 #' 2018-04-24 SA v1
 #'#################################################################################################################
 
 # connection details
-DEFAULT_SERVER = "server.name.url.nz"
-DEFAULT_DATABASE = "database_name"
-DEFAULT_PORT = NA # fetch from within SQL if needed
+DEFAULT_SERVER = "SERVER"
+DEFAULT_DATABASE = "DATABASE"
+DEFAULT_PORT = NA # can fetch via SQL query
 # DO NOT RELEASE THESE VALUES
+
+# pre checks
+required_packages = c("odbc", "DBI", "dplyr", "dbplyr")
+for(package in required_packages)
+  if(! (package %in% installed.packages()))
+    stop(sprintf("must install %s package",package))
 
 # library
 library(DBI)
@@ -96,17 +103,19 @@ create_database_connection = function(..., server = NA, database = NA, port = NA
 #' Map SQL table into R
 #' Creates access point for R to run queries on SQL server
 #' 
-#' The same db_connection must be used foreach table access point. Otherwise
-#' you will notbeable to join tables together. Tables from different databases
-#' within thesame server can be accessed bythe same connection.
+#' db_hack lets us bypass the requirement that the table exists in the database.
+#' This is necessary when joining two tables, from different databases that can 
+#' be accessed by the same connection.
 #' 
-create_access_point = function(db_connection, schema, tbl_name){
+create_access_point = function(db_connection, schema, tbl_name, db_hack = FALSE){
   # check input
   assert(is.character(schema),"schema name must be character")
   assert(is.character(tbl_name),"table name must be character")
   # special characters (reduce SQL injection risk)
   assert(!grepl("[;:'(){}? ]",schema), "schema must not contain special characters or white space")
   assert(!grepl("[;:'(){}? ]",tbl_name), "table must not contain special characters or white space")
+  # table in connection
+  assert(db_hack | tbl_name %in% dbListTables(db_connection),paste0(tbl_name," is not found in database"))
   
   # access table
   if(nchar(schema) > 0)
@@ -289,7 +298,7 @@ append_database_table = function(db_connection, schema, tbl_name, list_of_column
   table_to_append = table_to_append %>% ungroup() %>% select(list_of_columns)
   
   sql_list_of_columns = paste0(escape(ident(list_of_columns), con = db_connection), collapse = ", ")
-  
+    
   query = paste0("INSERT INTO ", schema,".",tbl_name,
                  "(",sql(sql_list_of_columns),")",
                  "\n  ",sql_render(table_to_append))
@@ -361,9 +370,9 @@ save_to_sql = function(query, desc){
     dir.create("./SQL tmp scripts")
   
   clean_name = gsub("[. :]","_",desc)
-  clean_time = gsub("[. :]","_",Sys.time())
+  clean_time = gsub("[.:]","-",format(Sys.time(), "%Y-%m-%d %H%M%OS3"))
   
-  file_name = paste0("./SQL tmp scripts/",clean_name," ",clean_time,".sql")
+  file_name = paste0("./SQL tmp scripts/",clean_time," ",clean_name,".sql")
   
   if(file.exists(file_name)){
     Sys.sleep(1)
@@ -393,19 +402,56 @@ robustness_support = function(mode, db_connection, schema, tbl_name, index_colum
   return(out_table)
 }
 
+#' Create view
+#' Returning connection to the new view
+#' 
+create_view = function(tbl_name, db_connection, schema, view_name, OVERWRITE = FALSE){
+  # special characters (reduce SQL injection risk)
+  assert(!grepl("[;:'(){}? ]",schema), "schema must not contain special characters or white space")
+  assert(!grepl("[;:'(){}? ]",view_name), "table must not contain special characters or white space")
+  # checks
+  assert(is.tbl(tbl_name), "input table must be of type tbl")
+  
+  # remove view if it exists
+  if(OVERWRITE)
+    delete_table(db_connection, schema, view_name, mode = "view")
+  
+  # remove database name from schema
+  just_schema = strsplit(schema,"\\.")[[1]][2]
+  
+  # SQL query
+  sql_query = build_sql(con = db_connection
+                        ,"CREATE VIEW ",sql(just_schema),".",escape(ident(view_name), con = db_connection)," AS \n"
+                        ,sql_render(tbl_name)," \n"
+  )
+  
+  # run query
+  save_to_sql(sql_query, "create_view")
+  result = dbExecute(db_connection, as.character(sql_query))
+  
+  # load and return new table
+  create_access_point(db_connection, schema, view_name)
+}
+
 #' Copy R table to SQL
-#' Work around as existing 'copy_to' function does not appear to work in our environment.
-#'
+#' The inbuilt "copy_to" function does not appear to work given our setup.
+#' Worse, it causes errors/locking preventing other users who are seeking
+#' to use the same connection method until their R session is restarted.
+#' Hence the following function has been created to provide the required
+#' functionality.
+#' 
+#' Initial version by Athira Nair.
+#' 
 copy_r_to_sql = function(db_connection, schema, sql_table_name, r_table_name,
                          named_list_of_columns, OVERWRITE = FALSE){
-  # special character (reduces SQL injection risk)
+  # special charchter (reduces SQL injection risk)
   assert(!grepl("[;:'(){}? ]",schema), "schema must not contain special characters or white space")
-  assert(!grepl("[;:'(){}? ]",sql_table_name), "schema must not contain special characters or white space")
+  assert(!grepl("[;:'(){}? ]",sql_table_name), "table must not contain special characters or white space")
   # corresponding columns
   assert(all(names(named_list_of_columns) %in% colnames(r_table_name)),
          "sql table requests columns not in R table")
   
-  tmp = create_table(db_connection, shema, sql_table_name, named_list_of_columns, OVERWRITE)
+  tmp = create_table(db_connection, schema, sql_table_name, named_list_of_columns, OVERWRITE)
   
   # trim r table to just variables of interest
   r_table_name = r_table_name %>%
@@ -417,21 +463,21 @@ copy_r_to_sql = function(db_connection, schema, sql_table_name, r_table_name,
       r_table_name[coln] = apply(r_table_name[coln], 1, function(x) sub("'", "''", x))
   }
   
-  # if column type is character or date, wrap in single quotes so SQL reads it as character string
+  # if column type is character or date, wrap in single quotes so SQL reads it as a character string
   for(coln in colnames(r_table_name)){
     col_type = named_list_of_columns[[coln]]
-    of(grepl("char", col_type) | grepl("date", col_type))
-    r_table_name[coln] = apply(r_table_name[coln], 1, function(x) paste0("'", as.character(x), "'"))
+    if(grepl("char", col_type) | grepl("date", col_type))
+      r_table_name[coln] = apply(r_table_name[coln], 1, function(x) paste0("'",as.character(x),"'"))
   }
   
   # SQL
-  sql_cols = paste0("([",paste0(names(named_list_of_columns), collapse = "],["), "])")
-  sql_values = paste0(apply(r_table_name, 1, 
-                            function(x) paste0("(", paste0(x, collapse = ","),")")),
-                      collapse = ",\n")
+  sql_cols = paste0("([",paste0(names(named_list_of_columns), collapse = "],["),"])")
+  sql_values = paste0(apply(r_table_name,1, 
+                         function(x) paste0("(",paste0(x, collapse = ","),")")),
+                   collapse = ",\n")
   
   my_sql = build_sql(con = db_connection,
-                     "INSERT INTO ", sql(schema), ".",sql(sql_table_name),"\n",
+                     "INSERT INTO ", sql(schema),".",sql(sql_table_name),"\n",
                      sql(sql_cols), "\n",
                      "VALUES ", sql(sql_values),";")
   
@@ -440,4 +486,4 @@ copy_r_to_sql = function(db_connection, schema, sql_table_name, r_table_name,
   
   r_table_name = create_access_point(db_connection, schema, sql_table_name)
 }
-  
+
