@@ -1,29 +1,38 @@
 ###############################################################################
-#' Description: Automated test suite for helper functions
-#' Outputs automated test results
+#' Description: Automated test suite for R general assembly tool and utility functions
+#'
+#' Input:
+#'
+#' Output: Automated test results
 #'
 #' Author: Simon Anastasiadis
+#'
+#' Dependencies:
 #'
 #' Notes:
 #'  - Working directory must contain this file, folder of test scripts, and the code files to test
 #'  - Sourcing the file runs all scripts (2 minutes), individual tests scripts can be run in order line by line
 #'  - Uses code folding by headers (Alt + O to collapse all)
 #'
+#' Issues:
+#'
+#' History (reverse order):
+#' 2021-10-04 SA output tests added
+#' 2020-11-18 SA v2 for release
+#' 2020-01-06 SA v1
+#' 2019-12-12 SA v0
 #' #############################################################################
 
 ## setup ------------------------------------------------------------------------------------------
 
-# working directory
+# confirm working directory
 PATH_TO_SCRIPTS <- "~/Path/To/Folder/Containing/R/Files"
-
-# schema for storing user created table
-our_schema <- "[]"
-# database for storing user created tables
-our_db <- "[]"
-# database for creating use created views
-our_usercode <- "[]"
+# confirm project schema
+our_schema <- "[DL-MAA20XX-YY]"
 
 setwd(PATH_TO_SCRIPTS)
+our_db <- "[IDI_Sandpit]"
+our_usercode <- "[IDI_UserCode]"
 
 ## test everything --------------------------------------------------------------------------------
 #
@@ -32,6 +41,8 @@ setwd(PATH_TO_SCRIPTS)
 source("utility_functions.R")
 source("table_consistency_checks.R")
 source("dbplyr_helper_functions.R")
+source("overview_dataset.R")
+source("summary_confidential.R")
 testthat::test_dir("./tests")
 
 ## test in sections -------------------------------------------------------------------------------
@@ -54,11 +65,27 @@ if (FALSE) {
 
   # test dbplyr helpers
   #
-  # excludes tests of the functions: create_clustered_index, write_for_reuse
+  # excludes tests of the functions: create_clustered_index, create_nonclustered_index, write_for_reuse
   # purge_tables_by_prefix, and compress_table
   source("dbplyr_helper_functions.R")
   testthat::test_file("./tests/test_DHF_independent_functions.R")
   testthat::test_file("./tests/test_DHF_connect_read_write.R")
   testthat::test_file("./tests/test_DHF_other_writing.R")
   testthat::test_file("./tests/test_DHF_manipulations.R")
+
+  # test generating overview of datasets
+  source("overview_dataset.R")
+  testthat::test_file("./tests/test_OD_filter.R")
+  testthat::test_file("./tests/test_OD_report.R")
+  
+  # test summarising and confidentialising of results
+  source("summary_confidential.R")
+  testthat::test_file("./tests/test_SC_support_functions.R")
+  testthat::test_file("./tests/test_SC_summarise.R")
+  testthat::test_file("./tests/test_SC_confidentialise.R")
 }
+
+## tidy up ----------------------------------------------------------------------------------------
+
+# remove folder for temporary SQL scripts
+unlink("./tests/SQL tmp scripts", recursive = TRUE)
